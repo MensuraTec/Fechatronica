@@ -1,0 +1,223 @@
+/*  Projeto Fechatronica
+parceria Mensura/Gilson
+*/
+
+// leitor na sede da Mensura
+
+// v1 05 deAgosto
+
+#include <SPI.h>
+#include <MFRC522.h>
+#include <SoftwareSerial.h>
+#include <stdlib.h>
+#include <avr/pgmspace.h>
+#include <EspMensura.h>
+
+#define N_MAX_TAGS_A 10
+#define N_MAX_TAGS_X 3
+#define N_MAX_HIST   10
+#define SS_PIN       10
+#define RST_PIN      9
+#define pinoTx       4
+#define pinoRx       5  
+
+//------------------ Conexao wifi  ------------------------------  
+char rede[] = "Mensura";            
+char senha[] = "112233445566";      
+char servidor[] = "184.106.153.149";   
+int porta=80;
+char chave[]="110IR5PNLR1QJM5E";
+bool conectadoWifi=false;
+bool conecatadoServidor=false;
+int retries=0;
+long agora=0;
+int tempoWifi=15000;
+
+EspMensura wifiMensura; 
+MFRC522 mfrc522(SS_PIN, RST_PIN);
+
+bool cheio=false;
+int pinoRele = 7;
+bool estadoBotao = false;
+int pinoBotao = 8;
+int ledAzul = 2;
+int ledVerde = 6;
+int ledVermelho = 3;
+int value = 0;
+
+typedef struct{
+  uint32_t id;
+  char nome[15];
+} acesso;
+
+// todo - Alocar uma quantidade de memória e fazer as funções de inserir no arraytags A as tagas iniciais e funcoes de insercao
+acesso tagsA[] = { 
+		  {0x4308ECDD, "UFSC Armin"}, 
+		  {0x524720E7,"Elisa"}, 
+		  {0xB559E95F,"UFSC Pinage"}, 	
+		  {0x7789F5BE, "Gilson"}, 
+		  {0x226C1EE7,"Corbelia"}, 
+		  {0x482C33, "Bloquinho A"}, 
+		  {0x4360CF8E,"Armin"}, 
+		  {0x0533F645,"Pinage"},
+  		  {0x554EEA45,"Daniel"},
+  		  {0x621024E7,"PASSE RAPIDO"}
+		   };
+    
+int ponteiroTagsA=sizeof(tagsA)/sizeof(acesso)-1;
+
+acesso historicoTags[N_MAX_HIST]={0};
+static int ponteiroTagsHistorico=0;
+
+const uint32_t tagsX[N_MAX_TAGS_X] PROGMEM = {0xF9A015C5, 0xE3FDA18E, 0xBA04F3B8}; //Tags Bloqueadas
+
+void setup()   {
+
+  Serial.begin(9600);   // Inicia a serial
+  iniciaWifi();
+  SPI.begin();      // Inicia  SPI bus
+  mfrc522.PCD_Init();   // Inicia MFRC522
+
+  Serial.println("---------------------Mensura---------------------");
+  Serial.println("");
+  Serial.println("\t\tControle de Acesso");
+  pinMode(ledVermelho, OUTPUT);
+  pinMode(ledAzul, OUTPUT);
+  pinMode(ledVerde, OUTPUT);
+  pinMode(pinoRele, OUTPUT);
+  pinMode (pinoBotao, INPUT_PULLUP);
+  digitalWrite(pinoRele, LOW);
+  digitalWrite(ledVermelho, LOW);
+  digitalWrite(ledAzul, HIGH);
+  digitalWrite(ledVerde, LOW);
+}
+
+void loop()
+{
+
+  processaWifi();
+
+   //botão
+   estadoBotao = digitalRead(pinoBotao);
+   if (!estadoBotao)
+   {
+     Serial.println("Botao apertado");
+     digitalWrite(pinoRele, HIGH);
+     digitalWrite(ledAzul, LOW);
+     digitalWrite(ledVerde, HIGH);
+     delay(3000);
+     digitalWrite(pinoRele, LOW);
+     digitalWrite(ledAzul, HIGH);
+     digitalWrite(ledVerde, LOW);
+   }
+  
+  if ( ! mfrc522.PICC_IsNewCardPresent()) return;
+  if ( ! mfrc522.PICC_ReadCardSerial()) return;        
+  
+  uint32_t conteudo = 0x00000000;
+  for (int i = 0; i < mfrc522.uid.size-1; i++)
+        {
+          conteudo|=mfrc522.uid.uidByte[i];
+          conteudo=conteudo<<8;
+        }
+    conteudo+=mfrc522.uid.uidByte[mfrc522.uid.size-1];
+    Serial.println(conteudo,HEX);
+
+    //***********Para Liberar acesso************
+        
+    for (int i = 0; i <= ponteiroTagsA ; i++) {
+          if (conteudo == tagsA[i].id)
+          {
+            Serial.println("Tag valida");
+            digitalWrite(pinoRele, HIGH);
+            digitalWrite(ledAzul, LOW);
+            digitalWrite(ledVerde, HIGH);
+            
+            historicoTags[ponteiroTagsHistorico]=tagsA[i];
+            ponteiroTagsHistorico++;
+
+           Serial.println("Imprimindo historico de acesso: ");
+            for (int i = 0; i < ponteiroTagsHistorico ; i++) {
+            	if(i==(ponteiroTagsHistorico-1))
+            	Serial.print("---->");
+            	Serial.println(String(historicoTags[i].nome));
+            }
+            	
+            if(cheio) for (int i = N_MAX_HIST-1; i>=ponteiroTagsHistorico ; i--) Serial.println(String(historicoTags[i].nome));
+            	
+           	if((ponteiroTagsHistorico)==N_MAX_HIST) {
+           	cheio=true;
+            Serial.println("Buffer de historico cheio");
+           	ponteiroTagsHistorico=0;
+           	}
+           	
+            
+        	delay(2000);
+        	digitalWrite(pinoRele, LOW);
+        	digitalWrite(ledAzul, HIGH);
+     		digitalWrite(ledVerde, LOW);
+        	return;
+    		}
+        }
+     
+     
+     for (int i = 0; i < N_MAX_TAGS_X ; i++) {
+
+          if (conteudo == pgm_read_dword_near(tagsX+i))
+          {
+            Serial.println("Tag bloqueada");
+            digitalWrite(ledAzul, LOW);
+            digitalWrite(ledVermelho, HIGH);
+            delay(1000);
+            digitalWrite(ledAzul, HIGH);
+            digitalWrite(ledVermelho, LOW);
+            return;
+          }
+        }
+}
+
+
+//-------------------------------- FUNCOES WIFI --------------
+
+   void processaWifi(){
+   	
+   	if(millis()-agora>tempoWifi){
+		agora=millis();
+		
+		if((ponteiroTagsHistorico>0)){
+			if(wifiMensura.conectaServidor(servidor, porta)){
+				if(wifiMensura.enviaDado(String(historicoTags[ponteiroTagsHistorico-1].id),historicoTags[ponteiroTagsHistorico-1].nome, chave)){
+					retries=0;    
+					ponteiroTagsHistorico--;
+					wifiMensura.desconectaServidor();
+					}  
+			}
+			else retries++;
+		}
+		
+	//	else if(cheio){
+	//		if(wifiMensura.conectaServidor(servidor, porta)){
+	//			if(wifiMensura.enviaDado(String(historicoTags[N_MAX_HIST-1].id),historicoTags[N_MAX_HIST-1].nome, chave)){
+	//				retries=0;    
+	//				ponteiroTagsHistorico=N_MAX_HIST-1;
+	//				wifiMensura.desconectaServidor();
+	//				cheio=false;
+	//				}  
+	//		}
+	//		else retries++;
+		
+   	}
+   
+    if(retries>=5) {
+      Serial.println("Problema de conexao");
+      wifiMensura.checaConexao();
+      retries=0;
+       }
+ }
+
+
+void iniciaWifi(){
+  wifiMensura.inicia(9600);
+  wifiMensura.conectaWifi(rede, senha);
+  agora=millis();
+}
